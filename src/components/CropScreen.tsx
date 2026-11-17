@@ -156,16 +156,15 @@ export default function CropScreen({
     if (working) return
     setWorking(true)
     setExportError(null)
-    // Give the button its pressed state before the canvas work runs.
-    requestAnimationFrame(() => {
-      try {
-        onExtract(cropImage(image.canvas, rotation, crop))
-      } catch (error) {
-        setExportError(error instanceof Error ? error.message : 'That crop could not be exported.')
-      } finally {
-        setWorking(false)
-      }
-    })
+    // No requestAnimationFrame here: it never fires in a backgrounded tab, and
+    // the crop is fast enough without deferring it.
+    try {
+      onExtract(cropImage(image.canvas, rotation, crop))
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : 'That crop could not be exported.')
+    } finally {
+      setWorking(false)
+    }
   }
 
   const handles: { mode: DragMode; position: string }[] = [

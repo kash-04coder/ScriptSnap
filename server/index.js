@@ -8,18 +8,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const PORT = Number(process.env.PORT) || 8787
 
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
+/**
+ * Tried in order. The 3.8/3.5 Flash tiers are the strongest at handwriting but
+ * are frequently overloaded (503) or stall for minutes on image input, so the
+ * lite tier — which read our samples accurately and answered in seconds — goes
+ * first. Override with GEMINI_MODEL / GEMINI_FALLBACK_MODELS.
+ */
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
 const FALLBACK_MODELS = (
-  process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash'
+  process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-3.8-flash,gemini-3.5-flash,gemini-3.1-flash-lite'
 )
   .split(',')
   .map((model) => model.trim())
   .filter(Boolean)
 
-/** Tried in order. A retired or overloaded model just moves on to the next. */
 const MODELS = [...new Set([PRIMARY_MODEL, ...FALLBACK_MODELS])]
-/** Upstream statuses worth retrying on the next model. */
-const RETRYABLE_STATUS = new Set([404, 503])
+/** Statuses worth retrying on the next model. */
+const RETRYABLE_STATUS = new Set([404, 503, 429])
+/** Cap on a single model attempt, so one stalled model cannot eat the request. */
+const ATTEMPT_TIMEOUT_MS = 25_000
+/** Cap on the whole chain. */
+const TOTAL_BUDGET_MS = 60_000
 
 const SYSTEM_INSTRUCTION =
   'Extract all handwritten text from this image with maximum accuracy. ' +
@@ -33,6 +42,13 @@ app.use(express.json({ limit: '25mb' }))
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, models: MODELS, configured: Boolean(process.env.GEMINI_API_KEY) })
 })
+
+/** Some models wrap the whole answer in a Markdown fence; unwrap it. */
+function normaliseText(raw) {
+  const text = raw.trim()
+  const fenced = /^```[a-z]*\r?\n([\s\S]*?)\r?\n```$/i.exec(text)
+  return (fenced ? fenced[1] : text).trim()
+}
 
 app.post('/api/extract', async (req, res) => {
   const image = typeof req.body?.image === 'string' ? req.body.image : ''
@@ -54,12 +70,18 @@ app.post('/api/extract', async (req, res) => {
 
   const mimeType = match[1].toLowerCase()
   const data = match[2].replace(/\s/g, '')
+  const startedAt = Date.now()
+  const deadline = startedAt + TOTAL_BUDGET_MS
 
   let response = null
   let payload = null
   let usedModel = MODELS[0]
+  let failure = null
 
   for (const model of MODELS) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 1000) break
+
     usedModel = model
     try {
       response = await fetch(
@@ -75,34 +97,31 @@ app.post('/api/extract', async (req, res) => {
             contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data } }] }],
             generationConfig: { temperature: 0.1 },
           }),
-          signal: AbortSignal.timeout(90_000),
+          signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
         },
       )
     } catch (error) {
-      const timedOut = error instanceof Error && error.name === 'TimeoutError'
-      res.status(504).json({
-        error: timedOut
-          ? 'The extraction took too long. Try a smaller crop or a better lit photo.'
-          : 'Could not reach the extraction service. Check your internet connection and try again.',
-      })
-      return
+      const timedOut =
+        error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+      failure = { timedOut }
+      response = null
+      console.warn(
+        `Gemini ${model} ${timedOut ? 'timed out' : 'was unreachable'}; trying the next model.`,
+      )
+      continue
     }
 
     payload = await response.json().catch(() => null)
-    if (response.ok || !RETRYABLE_STATUS.has(response.status)) break
+    if (response.ok) break
 
-    console.warn(`Gemini model ${model} unavailable (${response.status}); trying the next model.`)
+    failure = { status: response.status, message: payload?.error?.message }
+    if (!RETRYABLE_STATUS.has(response.status)) break
+
+    console.warn(`Gemini ${model} returned ${response.status}; trying the next model.`)
   }
 
   if (!response || !response.ok) {
-    const status = response ? response.status : 502
-
-    if (status === 503) {
-      res.status(503).json({
-        error: 'Every extraction model is busy right now. Wait a moment and try again.',
-      })
-      return
-    }
+    const status = response?.status ?? failure?.status ?? null
 
     if (status === 404) {
       res.status(502).json({
@@ -111,22 +130,39 @@ app.post('/api/extract', async (req, res) => {
       return
     }
 
-    const rateLimited = status === 429
-    res.status(status === 400 ? 400 : rateLimited ? 429 : 502).json({
-      error: rateLimited
-        ? 'Too many requests right now. Wait a few seconds and try again.'
-        : `Extraction failed: ${
-            (payload && payload.error && payload.error.message) ||
-            `Extraction service returned ${status}.`
-          }`,
+    if (status === 429) {
+      res.status(429).json({
+        error: 'Too many requests right now. Wait a few seconds and try again.',
+      })
+      return
+    }
+
+    if (status === 503) {
+      res.status(503).json({
+        error: 'The extraction service is busy right now. Please try again in a moment.',
+      })
+      return
+    }
+
+    if (!response || failure?.timedOut) {
+      res.status(504).json({
+        error:
+          'The extraction service did not respond in time. Please try again in a moment.',
+      })
+      return
+    }
+
+    res.status(502).json({
+      error: `Extraction failed: ${failure?.message || `Extraction service returned ${status}.`}`,
     })
     return
   }
 
-  const text = (payload?.candidates?.[0]?.content?.parts ?? [])
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim()
+  const text = normaliseText(
+    (payload?.candidates?.[0]?.content?.parts ?? [])
+      .map((part) => part.text ?? '')
+      .join(''),
+  )
 
   if (!text) {
     const blocked = payload?.promptFeedback?.blockReason
@@ -138,7 +174,10 @@ app.post('/api/extract', async (req, res) => {
     return
   }
 
-  res.json({ text, model: usedModel })
+  console.log(
+    `Extracted ${text.length} chars via ${usedModel} in ${Date.now() - startedAt}ms (${data.length} b64 chars)`,
+  )
+  res.json({ text, model: usedModel, ms: Date.now() - startedAt })
 })
 
 // Serve the built app when running in production.
