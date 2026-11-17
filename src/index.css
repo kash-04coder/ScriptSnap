@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  @apply bg-white text-zinc-900 antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Keep focus rings crisp and visible on a light UI. */
+:focus-visible {
+  @apply outline-none ring-2 ring-zinc-900 ring-offset-2 ring-offset-white;
+}
+
+.safe-bottom {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem);
+}
