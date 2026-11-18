@@ -40,7 +40,7 @@ export default function ProcessingScreen({ thumbnail }: { thumbnail: string | nu
         </div>
 
         <p className="mt-4 text-center text-[11px] text-zinc-400">
-          Long pages can take up to 20 seconds.
+          This can take up to 30 seconds when the service is busy.
         </p>
         <p className="sr-only" role="status" aria-live="polite">
           Extracting text from your notes

@@ -3,20 +3,25 @@ import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  LITE_ATTEMPT_TIMEOUT_MS,
+  QUALITY_ATTEMPT_TIMEOUT_MS,
+  attemptTimeoutFor,
+} from './models.js'
+import { stripConversationalFiller } from './text.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const PORT = Number(process.env.PORT) || 8787
 
 /**
- * Tried in order. The 3.8/3.5 Flash tiers are the strongest at handwriting but
- * are frequently overloaded (503) or stall for minutes on image input, so the
- * lite tier — which read our samples accurately and answered in seconds — goes
- * first. Override with GEMINI_MODEL / GEMINI_FALLBACK_MODELS.
+ * Quality first: the strongest handwriting model is attempted first but with a
+ * short leash, so a temporary outage costs a few seconds instead of the whole
+ * request, and the app falls back to the lite tier that currently answers fast.
  */
-const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
+const PRIMARY_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash'
 const FALLBACK_MODELS = (
-  process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-3.8-flash,gemini-3.5-flash,gemini-3.1-flash-lite'
+  process.env.GEMINI_FALLBACK_MODELS ?? 'gemini-3.5-flash-lite,gemini-3.5-flash,gemini-3.1-flash-lite'
 )
   .split(',')
   .map((model) => model.trim())
@@ -25,10 +30,8 @@ const FALLBACK_MODELS = (
 const MODELS = [...new Set([PRIMARY_MODEL, ...FALLBACK_MODELS])]
 /** Statuses worth retrying on the next model. */
 const RETRYABLE_STATUS = new Set([404, 503, 429])
-/** Cap on a single model attempt, so one stalled model cannot eat the request. */
-const ATTEMPT_TIMEOUT_MS = 25_000
 /** Cap on the whole chain. */
-const TOTAL_BUDGET_MS = 60_000
+const TOTAL_BUDGET_MS = 65_000
 
 const SYSTEM_INSTRUCTION =
   'Extract all handwritten text from this image with maximum accuracy. ' +
@@ -36,19 +39,15 @@ const SYSTEM_INSTRUCTION =
   'spatial placement, indentation, bullet points, and line breaks of the original document. ' +
   'Return only the extracted text without conversational filler.'
 
+/** Reinforces the system instruction on the user turn. */
+const USER_INSTRUCTION = 'Return only the extracted text.'
+
 const app = express()
 app.use(express.json({ limit: '25mb' }))
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, models: MODELS, configured: Boolean(process.env.GEMINI_API_KEY) })
 })
-
-/** Some models wrap the whole answer in a Markdown fence; unwrap it. */
-function normaliseText(raw) {
-  const text = raw.trim()
-  const fenced = /^```[a-z]*\r?\n([\s\S]*?)\r?\n```$/i.exec(text)
-  return (fenced ? fenced[1] : text).trim()
-}
 
 app.post('/api/extract', async (req, res) => {
   const image = typeof req.body?.image === 'string' ? req.body.image : ''
@@ -83,6 +82,8 @@ app.post('/api/extract', async (req, res) => {
     if (remaining <= 1000) break
 
     usedModel = model
+    const attemptTimeout = attemptTimeoutFor(model, remaining)
+
     try {
       response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -94,10 +95,15 @@ app.post('/api/extract', async (req, res) => {
           },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
-            contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data } }] }],
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: USER_INSTRUCTION }, { inlineData: { mimeType, data } }],
+              },
+            ],
             generationConfig: { temperature: 0.1 },
           }),
-          signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
+          signal: AbortSignal.timeout(attemptTimeout),
         },
       )
     } catch (error) {
@@ -106,7 +112,7 @@ app.post('/api/extract', async (req, res) => {
       failure = { timedOut }
       response = null
       console.warn(
-        `Gemini ${model} ${timedOut ? 'timed out' : 'was unreachable'}; trying the next model.`,
+        `Gemini ${model} ${timedOut ? 'timed out' : 'was unreachable'} after ${attemptTimeout}ms; trying the next model.`,
       )
       continue
     }
@@ -146,8 +152,7 @@ app.post('/api/extract', async (req, res) => {
 
     if (!response || failure?.timedOut) {
       res.status(504).json({
-        error:
-          'The extraction service did not respond in time. Please try again in a moment.',
+        error: 'The extraction service did not respond in time. Please try again in a moment.',
       })
       return
     }
@@ -158,7 +163,7 @@ app.post('/api/extract', async (req, res) => {
     return
   }
 
-  const text = normaliseText(
+  const text = stripConversationalFiller(
     (payload?.candidates?.[0]?.content?.parts ?? [])
       .map((part) => part.text ?? '')
       .join(''),
@@ -190,6 +195,9 @@ if (fs.existsSync(dist)) {
 app.listen(PORT, () => {
   console.log(`ScriptSnap API on http://localhost:${PORT}`)
   console.log(`Models in order: ${MODELS.join(' → ')}`)
+  console.log(
+    `Timeouts: quality models ${QUALITY_ATTEMPT_TIMEOUT_MS}ms, lite models ${LITE_ATTEMPT_TIMEOUT_MS}ms`,
+  )
   if (!process.env.GEMINI_API_KEY) {
     console.warn('GEMINI_API_KEY is not set — /api/extract will return 503.')
   }
