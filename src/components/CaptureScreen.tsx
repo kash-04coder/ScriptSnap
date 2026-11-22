@@ -1,5 +1,6 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
+import CameraScreen, { cameraIsSupported } from './CameraScreen'
 import { AlertIcon, CameraIcon, GalleryIcon, ScanIcon } from './Icons'
 
 type Props = {
@@ -11,6 +12,15 @@ type Props = {
 export default function CaptureScreen({ onFile, error, busy }: Props) {
   const cameraInput = useRef<HTMLInputElement>(null)
   const galleryInput = useRef<HTMLInputElement>(null)
+  const [cameraOpen, setCameraOpen] = useState(false)
+
+  // A live stream is the only way to open the camera; desktop browsers ignore
+  // `capture` and would just show a file dialog. Where a stream is impossible
+  // (http on a LAN address) the capture input still works on mobile.
+  const openCamera = () => {
+    if (cameraIsSupported()) setCameraOpen(true)
+    else cameraInput.current?.click()
+  }
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -44,7 +54,7 @@ export default function CaptureScreen({ onFile, error, busy }: Props) {
         <div className="mt-8 space-y-3">
           <button
             type="button"
-            onClick={() => cameraInput.current?.click()}
+            onClick={openCamera}
             disabled={busy}
             className="flex min-h-[60px] w-full items-center justify-center gap-3 rounded-2xl bg-zinc-900 px-5 text-[15px] font-semibold text-white shadow-sm transition active:scale-[0.99] disabled:opacity-60"
           >
@@ -89,6 +99,20 @@ export default function CaptureScreen({ onFile, error, busy }: Props) {
           servers.
         </p>
       </main>
+
+      {cameraOpen && (
+        <CameraScreen
+          onCapture={(file) => {
+            setCameraOpen(false)
+            onFile(file)
+          }}
+          onClose={() => setCameraOpen(false)}
+          onUseFilePicker={() => {
+            setCameraOpen(false)
+            cameraInput.current?.click()
+          }}
+        />
+      )}
 
       <input
         ref={cameraInput}
