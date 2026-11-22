@@ -2,14 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import CaptureScreen from './components/CaptureScreen'
 import CropScreen from './components/CropScreen'
 import EditorScreen from './components/EditorScreen'
+import LoginScreen from './components/LoginScreen'
 import ProcessingScreen from './components/ProcessingScreen'
 import { AlertIcon, CheckIcon } from './components/Icons'
+import { AuthRequiredError, checkSession } from './lib/auth'
 import { copyToClipboard, downloadTextFile } from './lib/export'
 import { extractTextFromImage } from './lib/gemini'
 import { DEFAULT_CROP, loadImageFile } from './lib/image'
 import type { CropTransform, LoadedImage } from './lib/image'
 
 type Screen = 'capture' | 'crop' | 'processing' | 'editor' | 'error'
+type AuthState = 'checking' | 'required' | 'ready'
 
 function ErrorScreen({
   message,
@@ -62,6 +65,7 @@ function ErrorScreen({
 }
 
 export default function App() {
+  const [auth, setAuth] = useState<AuthState>('checking')
   const [screen, setScreen] = useState<Screen>('capture')
   const [image, setImage] = useState<LoadedImage | null>(null)
   const [transform, setTransform] = useState<CropTransform>({
@@ -75,6 +79,16 @@ export default function App() {
   const [loadingFile, setLoadingFile] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const toastTimer = useRef<number | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void checkSession().then((ok) => {
+      if (!cancelled) setAuth(ok ? 'ready' : 'required')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -118,6 +132,11 @@ export default function App() {
       setText(extracted)
       setScreen('editor')
     } catch (error) {
+      if (error instanceof AuthRequiredError) {
+        setAuth('required')
+        setScreen('capture')
+        return
+      }
       setExtractionError(
         error instanceof Error ? error.message : 'Something went wrong while reading your notes.',
       )
@@ -151,6 +170,18 @@ export default function App() {
     }
     const filename = downloadTextFile(text)
     showToast(`Saved ${filename}`)
+  }
+
+  if (auth === 'checking') {
+    return (
+      <div className="grid min-h-dvh place-items-center bg-white" role="status">
+        <span className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-200 border-t-zinc-900" />
+      </div>
+    )
+  }
+
+  if (auth === 'required') {
+    return <LoginScreen onSuccess={() => setAuth('ready')} />
   }
 
   return (

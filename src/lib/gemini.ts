@@ -1,3 +1,5 @@
+import { AuthRequiredError } from './auth'
+
 export class ExtractionError extends Error {
   constructor(message: string) {
     super(message)
@@ -5,15 +7,16 @@ export class ExtractionError extends Error {
   }
 }
 
-/** Give up slightly after the server's own 60s chain budget. */
+/** Give up slightly after the server's own 65s chain budget. */
 const CLIENT_TIMEOUT_MS = 75_000
 
 /**
  * API service layer for handwriting extraction.
  *
  * The browser only ever talks to our own endpoint; the Gemini key stays on the
- * server (`server/index.js`), which forwards the image to Gemini and walks a
- * fallback list of models when one is overloaded.
+ * server (`server/extract.js`), which forwards the image to Gemini and walks a
+ * fallback list of models when one is overloaded. The request carries the
+ * session cookie, and a 401 sends the UI back to the passphrase screen.
  */
 export async function extractTextFromImage(image: string): Promise<string> {
   const controller = new AbortController()
@@ -25,6 +28,7 @@ export async function extractTextFromImage(image: string): Promise<string> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ image }),
+      credentials: 'same-origin',
       signal: controller.signal,
     })
   } catch {
@@ -42,6 +46,10 @@ export async function extractTextFromImage(image: string): Promise<string> {
     payload = (await response.json()) as { text?: string; error?: string }
   } catch {
     payload = null
+  }
+
+  if (response.status === 401) {
+    throw new AuthRequiredError()
   }
 
   if (!response.ok) {
