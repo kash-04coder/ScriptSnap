@@ -1,13 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "express",
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
-  "functions": {
-    "app.js": {
-      "maxDuration": 120
-    }
-  },
+  "buildCommand": "node scripts/vercel-build.mjs",
+  "outputDirectory": ".",
   "headers": [
     {
       "source": "/(.*)",
