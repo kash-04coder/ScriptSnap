@@ -13,10 +13,14 @@ const RETRYABLE_STATUS = new Set([404, 503, 429])
 /** Cap on the whole chain. */
 const TOTAL_BUDGET_MS = 65_000
 
-const SYSTEM_INSTRUCTION =
+export const SYSTEM_INSTRUCTION =
   'Extract all handwritten text from this image with maximum accuracy. ' +
-  'Correct obvious spelling mistakes based on surrounding context, and preserve the exact ' +
-  'spatial placement, indentation, bullet points, and line breaks of the original document. ' +
+  'Transcribe it exactly in the language and script it was written in — Hindi in Devanagari, and ' +
+  'likewise for any other language or script — and never translate, transliterate or romanise it, ' +
+  'even when a note mixes languages or the rest of the app is in English. ' +
+  'Correct only obvious spelling mistakes in that same language based on surrounding context, and ' +
+  'preserve the exact spatial placement, indentation, bullet points, and line breaks of the original ' +
+  'document. ' +
   'Return only the extracted text without conversational filler.'
 
 /** Reinforces the system instruction on the user turn. */

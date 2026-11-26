@@ -11,6 +11,12 @@ export default {
           '-apple-system',
           'Segoe UI',
           'Roboto',
+          // Devanagari faces, so Hindi notes render with correct shaping and
+          // never fall through to a Latin-only font (Windows, Android, Apple).
+          'Nirmala UI',
+          'Noto Sans Devanagari',
+          'Kohinoor Devanagari',
+          'Mangal',
           'Helvetica Neue',
           'Arial',
           'sans-serif',

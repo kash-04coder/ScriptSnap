@@ -7,6 +7,7 @@ import {
   attemptTimeoutFor,
   isLiteTier,
 } from '../server/models.js'
+import { SYSTEM_INSTRUCTION, extractText } from '../server/extract.js'
 import { leadInEnd, stripConversationalFiller } from '../server/text.js'
 
 const strip = (input) => stripConversationalFiller(input)
@@ -102,4 +103,54 @@ test('quality models still get the short leash', () => {
 test('the remaining chain budget still caps an attempt', () => {
   assert.equal(attemptTimeoutFor('gemini-3.5-flash-lite', 4_000), 4_000)
   assert.equal(attemptTimeoutFor('gemini-3.8-flash', 0), 0)
+})
+
+// --- language and script preservation --------------------------------------
+
+/** Stub Gemini: records the request and answers with `candidates` text. */
+function stubGemini(text, calls = []) {
+  return async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) })
+    return new Response(
+      JSON.stringify({ candidates: [{ content: { parts: [{ text }] } }] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
+}
+
+const extract = (fetchImpl) =>
+  extractText({
+    apiKey: 'test-key',
+    image: { mimeType: 'image/png', data: 'AA==' },
+    models: ['gemini-3.8-flash'],
+    fetchImpl,
+    logger: { warn() {} },
+  })
+
+test('the system instruction pins output to the source language and script', () => {
+  assert.match(SYSTEM_INSTRUCTION, /language and script/i)
+  assert.match(SYSTEM_INSTRUCTION, /Devanagari/)
+  assert.match(SYSTEM_INSTRUCTION, /never translate/i)
+  assert.match(SYSTEM_INSTRUCTION, /transliterate/i)
+})
+
+test('the language directive is actually sent to Gemini', async () => {
+  const calls = []
+  await extract(stubGemini('नमस्ते', calls))
+
+  assert.equal(calls.length, 1)
+  const instruction = calls[0].body.systemInstruction.parts[0].text
+  assert.match(instruction, /never translate/i)
+  assert.match(instruction, /Devanagari/)
+})
+
+test('Devanagari text is returned unchanged after filler stripping', async () => {
+  const note = 'मेरा नाम Rohit है।\n\n1. हर सुबह दौड़ना\n2. Project deadline: 15 दिसंबर 2026'
+  const result = await extract(stubGemini(note))
+  assert.equal(result.text, note)
+})
+
+test('an English lead-in before Hindi text is still stripped', async () => {
+  const result = await extract(stubGemini('Here is the extracted text: नई भाषा सीखना'))
+  assert.equal(result.text, 'नई भाषा सीखना')
 })

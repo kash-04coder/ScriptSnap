@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
+import { noteLanguageTag } from '../lib/language'
 import {
   ChevronDownIcon,
   CopyIcon,
@@ -55,6 +56,7 @@ export default function EditorScreen({
 }: Props) {
   const [showOriginal, setShowOriginal] = useState(false)
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
+  const noteLang = noteLanguageTag(text)
 
   return (
     <div className="flex min-h-dvh flex-col bg-white">
@@ -112,8 +114,9 @@ export default function EditorScreen({
           value={text}
           onChange={(event) => onChange(event.target.value)}
           spellCheck
+          lang={noteLang || undefined}
           placeholder="Your extracted text will appear here…"
-          className="min-h-[46vh] w-full flex-1 resize-none rounded-2xl border border-zinc-200 bg-white p-4 text-[15px] leading-7 text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus-visible:ring-1 focus-visible:ring-zinc-300 focus-visible:ring-offset-0"
+          className="min-h-[46vh] w-full flex-1 resize-none rounded-2xl border border-zinc-200 bg-white p-4 text-[15px] leading-8 text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus-visible:ring-1 focus-visible:ring-zinc-300 focus-visible:ring-offset-0"
         />
         <p className="mt-2 px-1 text-[11px] tabular-nums text-zinc-400">
           {words} {words === 1 ? 'word' : 'words'} · tap the text to edit
